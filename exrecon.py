@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 import os
-import platform
 import random
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from types import FrameType
 
 
 VERSION = "2.1.0"
@@ -30,17 +29,6 @@ UA_STRING = (
 )
 
 SCAN_LABELS = {
-    "1": "TOR Quick Scan",
-    "2": "TOR Service Detection",
-    "3": "TOR UDP Scan + Vuln Detection",
-    "4": "TOR Full TCP Port Scan",
-    "5": "TOR Aggressive Scan",
-    "6": "TOR Firewall Evasion Scan",
-    "7": "TOR Web App Enumeration (Nikto)",
-    "8": "TOR Stealth SYN Scan",
-}
-
-SUMMARY_LABELS = {
     "1": "Quick Scan (Top 100 TCP Ports)",
     "2": "Service Detection (Banner, SSL, HTTP)",
     "3": "UDP Vuln Detection",
@@ -51,27 +39,12 @@ SUMMARY_LABELS = {
     "8": "Stealth SYN Scan",
 }
 
-SUPPORT_ACTIONS = [
-    "Dependency Check and Install",
-    "TOR Config",
-    "proxychains4 Config Check",
-    "TOR Startup",
-    "TOR Circuit Rotation",
-    "TOR Routing Verification",
-    "Decoy IP Generation",
-    "Human-Readable Summary",
-    "PDF Export",
-    "Delta Analysis",
-    "View Results",
-]
-
-IS_WINDOWS = platform.system() == "Windows"
-
 
 def print_color(message: str) -> None:
     print(message, flush=True)
 
-def handle_interrupt(signum: int, frame: FrameType | None) -> None:
+
+def handle_interrupt(signum, frame) -> None:
     print_color(
         f"\n{RED}[!]{NC} Interrupted. Partial results may exist in: {OUTPUT_DIR}"
     )
@@ -98,12 +71,6 @@ def command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def require_command(name: str, context: str) -> None:
-    if not command_exists(name):
-        print_color(f"{RED}[!]{NC} Missing required command for {context}: {name}")
-        raise SystemExit(1)
-
-
 def package_installed(name: str) -> bool:
     if not command_exists("dpkg-query"):
         return False
@@ -116,9 +83,7 @@ def package_installed(name: str) -> bool:
 
 
 def check_root() -> None:
-    if IS_WINDOWS:
-        return
-    if hasattr(os, "geteuid") and os.geteuid() != 0:  # type: ignore[attr-defined]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
         print_color(
             f"{YELLOW}[!]{NC} Warning: Not running as root. SYN scans will not work correctly."
         )
@@ -126,13 +91,6 @@ def check_root() -> None:
 
 def check_dependencies() -> None:
     print_color(f"{GREEN}[+]{NC} Checking for required dependencies...")
-
-    if IS_WINDOWS:
-        print_color(
-            f"{YELLOW}[!]{NC} Windows detected. Skipping Linux package installation checks."
-        )
-        return
-
     packages = [
         "nmap",
         "tor",
@@ -158,8 +116,6 @@ def check_dependencies() -> None:
     if missing:
         print_color(f"{YELLOW}[*]{NC} Missing packages: {' '.join(missing)}")
         print_color(f"{YELLOW}[*]{NC} Installing missing dependencies...")
-        require_command("sudo", "dependency installation")
-        require_command("apt", "dependency installation")
         run_command(["sudo", "apt", "update"])
         run_command(["sudo", "apt", "install", "-y", *missing])
 
@@ -177,18 +133,13 @@ def ensure_line(path: Path, line: str) -> None:
 
 
 def configure_tor() -> None:
-    if IS_WINDOWS:
-        print_color(f"{YELLOW}[!]{NC} Skipping Linux TOR config on Windows.")
-        return
     torrc = Path("/etc/tor/torrc")
-    ensure_line(torrc, "ControlPort 9051")
-    ensure_line(torrc, "CookieAuthentication 0")
+    if torrc.exists():
+        ensure_line(torrc, "ControlPort 9051")
+        ensure_line(torrc, "CookieAuthentication 0")
 
 
 def check_proxychains_config() -> None:
-    if IS_WINDOWS:
-        print_color(f"{YELLOW}[!]{NC} proxychains4 config check is not available on Windows.")
-        return
     conf = Path("/etc/proxychains4.conf")
     if not conf.exists():
         print_color(
@@ -214,22 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--version", action="version", version=f"ExRecon v{VERSION}"
     )
-    parser.add_argument(
-        "--list-scans",
-        action="store_true",
-        help="List all available scan modules and support actions",
-    )
     return parser.parse_args()
-
-
-def list_available_features() -> None:
-    print("Available scan modules:")
-    for scan_id, label in SCAN_LABELS.items():
-        print(f"  {scan_id}) {label}")
-
-    print("\nAvailable support actions:")
-    for action in SUPPORT_ACTIONS:
-        print(f"  - {action}")
 
 
 def prompt_target(initial: str | None) -> str:
@@ -243,8 +179,14 @@ def prompt_target(initial: str | None) -> str:
 def prompt_scan_types(initial: str | None) -> list[str]:
     if not initial:
         print("Select scan types (comma-separated, e.g., 1,3,5):")
-        for scan_id, label in SCAN_LABELS.items():
-            print(f"  {scan_id}) {label}")
+        print("  1) TOR Quick Scan")
+        print("  2) TOR Service Detection")
+        print("  3) TOR UDP Scan + Vuln Detection")
+        print("  4) TOR Full TCP Port Scan")
+        print("  5) TOR Aggressive Scan")
+        print("  6) TOR Firewall Evasion Scan")
+        print("  7) TOR Web App Enumeration (Nikto)")
+        print("  8) TOR Stealth SYN Scan")
         initial = input("Enter selection: ").strip()
 
     selected = [item.strip() for item in initial.split(",") if item.strip()]
@@ -264,40 +206,18 @@ def prune_old_logs() -> None:
 
 
 def generate_decoys() -> str:
-    # Exclude reserved/private/special-use ranges for first octet
-    valid_first_octets = [
-        i for i in range(1, 224)
-        if i not in {10, 127, 169, 172, 192, 224}
-    ]
-    decoys: list[str] = []
+    decoys = []
     for _ in range(5):
-        while True:
-            first = random.choice(valid_first_octets)
-            # Exclude 172.16.0.0/12 and 192.168.0.0/16
-            if first == 172:
-                second = random.randint(0, 255)
-                if 16 <= second <= 31:
-                    continue
-            elif first == 192:
-                second = random.randint(0, 255)
-                if second == 168:
-                    continue
-            elif first == 169:
-                second = random.randint(0, 255)
-                if second == 254:
-                    continue
-            else:
-                second = random.randint(0, 255)
-            ip = ".".join(
+        decoys.append(
+            ".".join(
                 [
-                    str(first),
-                    str(second),
+                    str(random.randint(1, 223)),
+                    str(random.randint(0, 255)),
                     str(random.randint(0, 255)),
                     str(random.randint(1, 254)),
                 ]
             )
-            decoys.append(ip)
-            break
+        )
     return ",".join(decoys)
 
 
@@ -311,7 +231,7 @@ def check_nikto() -> bool:
 def check_decoy_supported() -> bool:
     if not command_exists("nmap"):
         return False
-    help_text = run_command(["nmap", "--help"], check=True, capture=True)
+    help_text = run_command(["nmap", "--help"], check=False, capture=True)
     return "-D" in help_text
 
 
@@ -325,14 +245,13 @@ def view_results(path: Path) -> None:
 
 
 def rotate_tor_circuit() -> None:
-    require_command("nc", "TOR circuit rotation")
     print_color(f"{YELLOW}[*]{NC} Rotating TOR circuit...")
     payload = 'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT\n'
     subprocess.run(
         ["nc", "127.0.0.1", "9051"],
         input=payload,
         text=True,
-        check=True,
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -341,8 +260,6 @@ def rotate_tor_circuit() -> None:
 
 
 def check_tor() -> bool:
-    if not command_exists("proxychains4") or not command_exists("curl"):
-        return False
     result = subprocess.run(
         ["proxychains4", "curl", "-s", "https://check.torproject.org/"],
         text=True,
@@ -352,17 +269,6 @@ def check_tor() -> bool:
 
 
 def start_tor() -> None:
-    if IS_WINDOWS:
-        print_color(
-            f"{YELLOW}[!]{NC} Automatic TOR service startup is not supported on Windows."
-        )
-        return
-
-    require_command("pgrep", "TOR process check")
-    require_command("sudo", "TOR service startup")
-    require_command("systemctl", "TOR service startup")
-    require_command("nc", "TOR readiness check")
-
     if subprocess.run(["pgrep", "-x", "tor"], stdout=subprocess.DEVNULL).returncode == 0:
         return
 
@@ -380,9 +286,6 @@ def start_tor() -> None:
 
 
 def verify_tor() -> str:
-    require_command("proxychains4", "TOR routing verification")
-    require_command("curl", "TOR routing verification")
-
     for attempt in range(1, 4):
         if check_tor():
             break
@@ -395,25 +298,19 @@ def verify_tor() -> str:
     tor_ip = run_command(
         ["proxychains4", "curl", "-s", "https://api.ipify.org"],
         capture=True,
-        check=True,
+        check=False,
     )
     print_color(f"{GREEN}[+]{NC} Active TOR Exit IP: {tor_ip}")
     return tor_ip
 
 
-def nmap_command(
-    base_output: Path, suffix: str, args: list[str], target: str, decoys: list[str]
-) -> None:
-    require_command("proxychains4", "nmap scan execution")
-    require_command("nmap", "nmap scan execution")
+def nmap_command(base_output: Path, suffix: str, args: list[str], target: str, decoys: list[str]) -> None:
     output_path = base_output.with_suffix(suffix)
     command = ["proxychains4", "nmap", *args, *decoys, "-oN", str(output_path), target]
     run_command(command)
 
 
-def run_scans(
-    selected_scans: list[str], target: str, output_base: Path, decoys: list[str]
-) -> None:
+def run_scans(selected_scans: list[str], target: str, output_base: Path, decoys: list[str]) -> None:
     for scan_type in selected_scans:
         rotate_tor_circuit()
 
@@ -589,7 +486,7 @@ def run_scans(
                         "-output",
                         str(output_base.with_suffix(".nikto")),
                     ],
-                    check=True,
+                    check=False,
                 )
         elif scan_type == "8":
             print_color(
@@ -620,12 +517,10 @@ def run_scans(
                 target,
                 decoys,
             )
-        else:
-            print_color(f"{RED}[!]{NC} Invalid selection: {scan_type}")
 
 
 def collect_findings(timestamp: str) -> list[str]:
-    findings: list[str] = []
+    findings = []
     pattern = re.compile(r"(open|PORT|Service detection performed)")
     for path in sorted(OUTPUT_DIR.glob(f"scan_{timestamp}.*")):
         if path.suffix in {".txt", ".pdf", ".delta", ".nikto"}:
@@ -640,7 +535,7 @@ def collect_nikto_findings(timestamp: str) -> list[str]:
     nikto_path = OUTPUT_DIR / f"scan_{timestamp}.nikto"
     if not nikto_path.exists():
         return []
-    matches: list[str] = []
+    matches = []
     pattern = re.compile(r"(\+|OSVDB|CVE)")
     for line in nikto_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         if pattern.search(line):
@@ -662,25 +557,25 @@ def generate_summary(timestamp: str, target: str, tor_ip: str, selected_scans: l
         f"TOR Exit IP: {tor_ip}",
         f"Scanned On:  {now_utc.strftime('%a %b %d %H:%M:%S UTC %Y')}",
         "",
-        "--- Scan Modules Executed ---",
+        "Modules Executed",
     ]
-    lines.extend(f"  [+] {SUMMARY_LABELS[scan]}" for scan in selected_scans)
-    lines.extend(["", "--- Nmap Findings ---"])
+    lines.extend(f"  [+] {SCAN_LABELS[scan]}" for scan in selected_scans)
+    lines.extend(["", "Nmap Findings"])
     lines.extend(findings or ["  No findings captured."])
 
     if nikto_findings:
-        lines.extend(["", "--- Nikto Findings ---"])
+        lines.extend(["", "Nikto Findings"])
         lines.extend(nikto_findings)
 
     lines.extend(
         [
             "",
-            "--- Timeline ---",
+            "Timeline",
             f"  [{timestamp}] TOR Circuit Established",
             f"  [{timestamp}] Scans Executed: {' '.join(selected_scans)}",
             f"  [{now_utc.strftime('%H:%M:%S')}] Report Generated",
             "",
-            "--- Notes ---",
+            "Notes",
             "  Scan completed and stored locally.",
             "",
         ]
@@ -697,26 +592,16 @@ def generate_pdf(summary_txt: Path) -> None:
             ["enscript", "-q", str(summary_txt), "-o", "-"],
             stdout=subprocess.PIPE,
         )
-        subprocess.run(
-            ["ps2pdf", "-", str(summary_pdf)],
-            stdin=enscript.stdout,
-            check=True,
-        )
+        with summary_pdf.open("wb") as output_handle:
+            subprocess.run(["ps2pdf", "-", str(summary_pdf)], stdin=enscript.stdout, check=False)
         if enscript.stdout is not None:
             enscript.stdout.close()
-        if enscript.wait() != 0:
-            raise subprocess.CalledProcessError(
-                enscript.returncode,
-                ["enscript", "-q", str(summary_txt), "-o", "-"],
-            )
+        enscript.wait()
     elif command_exists("pandoc"):
-        run_command(["pandoc", str(summary_txt), "-o", str(summary_pdf)], check=True)
+        run_command(["pandoc", str(summary_txt), "-o", str(summary_pdf)], check=False)
 
 
 def generate_delta(summary_txt: Path) -> None:
-    if not command_exists("diff"):
-        print_color(f"{YELLOW}[!]{NC} diff not available. Skipping delta analysis.")
-        return
     summaries = sorted(OUTPUT_DIR.glob("scan_summary_*.txt"), reverse=True)
     latest_summary = next((path for path in summaries if path != summary_txt), None)
     if latest_summary is None:
@@ -751,15 +636,6 @@ def maybe_view_results(timestamp: str, summary_txt: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-
-    if args.list_scans:
-        list_available_features()
-        return
-
-    if IS_WINDOWS:
-        print_color(
-            f"{YELLOW}[!]{NC} Windows detected. This script mirrors a Linux TOR/proxychains/nmap workflow and requires compatible tools to be installed manually."
-        )
 
     check_root()
     check_dependencies()
