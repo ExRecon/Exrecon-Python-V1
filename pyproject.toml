@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exrecon"
-version = "1.0.0"
-description = "Advanced OSINT & reconnaissance framework for professional security assessments"
+version = "2.2.0-secure"
+description = "Secure, user‑space Tor Nmap automation for OSINT and reconnaissance"
 readme = "README.md"
 authors = [{ name = "Ali Ihtsham", email = "exreconnaissance@gmail.com" }]
 license = { text = "Commercial - All Rights Reserved" }
@@ -21,15 +21,7 @@ classifiers = [
     "License :: Other/Proprietary License",
 ]
 requires-python = ">=3.8"
-dependencies = [
-    "requests>=2.25.0",
-    "colorama>=0.4.4",
-    "python-nmap>=0.7.1",
-    "socksipy-chain>=1.0.0",      # for Tor/proxychains routing
-    "tqdm>=4.62.0",
-    "beautifulsoup4>=4.9.3",
-    "lxml>=4.6.3",
-]
+dependencies = []   # No external Python packages – only standard library
 
 [project.optional-dependencies]
 dev = ["pytest>=6.0", "black>=21.0", "isort>=5.9", "ruff>=0.0.260"]
@@ -39,7 +31,6 @@ dev = ["pytest>=6.0", "black>=21.0", "isort>=5.9", "ruff>=0.0.260"]
 "Bug Reports" = "https://github.com/ExRecon/Exrecon-Python-V1/issues"
 "Documentation" = "https://github.com/ExRecon/Exrecon-Python-V1#readme"
 
-# CLI entry point – creates `exrecon` command in PATH
 [project.scripts]
 exrecon = "exrecon.__main__:main"
 
@@ -58,4 +49,4 @@ line_length = 100
 [tool.ruff]
 line-length = 100
 select = ["E", "F", "W", "C90", "I"]
-ignore = ["E501"]  # line too long handled by black
+ignore = ["E501"]
