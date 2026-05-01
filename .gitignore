@@ -1,13 +1,9 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / cache
 __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
-*.so
-
 # Distribution / packaging
-.Python
 build/
 develop-eggs/
 dist/
@@ -31,11 +27,7 @@ MANIFEST
 *.manifest
 *.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
+# Unit test / coverage
 htmlcov/
 .tox/
 .nox/
@@ -45,12 +37,8 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
-*.py,cover
 .hypothesis/
 .pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
 
 # Environments
 .env
@@ -70,19 +58,19 @@ pythonenv*
 *~
 .DS_Store
 
-# Project-specific
+# Local output directories (if someone runs from repo root)
 output/
 logs/
 *.log
-*.tmp
-*.bak
+*.nmap
+*.delta
+*.nikto
 
-# Tor / proxychains local config backups
-/etc/tor/torrc.backup
-/etc/proxychains4.conf.backup
+# Your script’s specific output (when run from current directory)
+tor_scan_logs/
+.exrecon/
 
-# Sensitive data (if you ever store API keys locally)
-config.ini
+# Sensitive data
 *.key
 *.pem
 .secrets
