@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -220,55 +220,75 @@ def get_tor_exit_ip(proxychains_conf: Path) -> str:
 # ---------------------------------------------------------------------------
 # Safe Nmap scan functions – all use -sT (TCP connect)
 # ---------------------------------------------------------------------------
-def run_safe_scan(target: str, proxychains_conf: Path, scan_args: List[str], output: Path) -> None:
-    """Execute an Nmap scan through proxychains, forcing -sT."""
-    base = ['proxychains4', '-q', '-f', str(proxychains_conf), 'nmap', '-sT']
-    # Add common safe options
-    base += ['-Pn', '-n', '--host-timeout', '5m']
-    # Explicitly do NOT include -O, -sS, -sU, --osscan-guess, etc.
-    cmd = base + scan_args + ['-oN', str(output), target]
+def run_scan_command(
+    target: str, proxychains_conf: Optional[Path], scan_args: List[str], output: Path
+) -> None:
+    """Execute an Nmap TCP connect scan, optionally through proxychains."""
+    if proxychains_conf is None:
+        cmd = ['nmap', '-sT']
+    else:
+        cmd = ['proxychains4', '-q', '-f', str(proxychains_conf), 'nmap', '-sT']
+    cmd += ['-Pn', '-n', '--host-timeout', '5m']
+    cmd += scan_args + ['-oN', str(output), target]
     run_cmd(cmd)
 
-def scan_quick(target: str, conf: Path, out: Path) -> None:
+def scan_quick(target: str, conf: Optional[Path], out: Path) -> None:
     color_print(CYAN, "[*] Quick TCP Connect Scan (top 100 ports)")
-    run_safe_scan(target, conf,
-                  ['--top-ports', '100', '-T2', '--reason'],
-                  out)
+    run_scan_command(
+        target,
+        conf,
+        ['--top-ports', '100', '-T2', '--reason'],
+        out,
+    )
 
-def scan_service(target: str, conf: Path, out: Path) -> None:
+def scan_service(target: str, conf: Optional[Path], out: Path) -> None:
     color_print(CYAN, "[*] Service Version Detection")
-    run_safe_scan(target, conf,
-                  ['-sV', '-T2', '--script=banner,http-title,ssl-cert',
-                   '--script-args=http.useragent=Mozilla/5.0'],
-                  out)
+    run_scan_command(
+        target,
+        conf,
+        [
+            '-sV',
+            '-T2',
+            '--script=banner,http-title,ssl-cert',
+            '--script-args=http.useragent=Mozilla/5.0',
+        ],
+        out,
+    )
 
-def scan_full_tcp(target: str, conf: Path, out: Path) -> None:
+def scan_full_tcp(target: str, conf: Optional[Path], out: Path) -> None:
     color_print(CYAN, "[*] Full TCP Port Scan (1-65535)")
-    run_safe_scan(target, conf,
-                  ['-p-', '-T2', '--reason'],
-                  out)
+    run_scan_command(
+        target,
+        conf,
+        ['-p-', '-T2', '--reason'],
+        out,
+    )
 
-def scan_web(target: str, conf: Path, out: Path) -> None:
+def scan_web(target: str, conf: Optional[Path], out: Path) -> None:
     color_print(CYAN, "[*] Web Application Enumeration")
-    # First Nmap for common web ports
     nmap_out = out.with_name(out.stem + '.webnmap')
-    run_safe_scan(target, conf,
-                  ['-p', '80,443,8080,8443', '-sV',
-                   '--script=http-title,http-enum,ssl-cert'],
-                  nmap_out)
-    # Nikto if available
+    run_scan_command(
+        target,
+        conf,
+        ['-p', '80,443,8080,8443', '-sV', '--script=http-title,http-enum,ssl-cert'],
+        nmap_out,
+    )
+
     if command_exists('nikto'):
         nikto_out = out.with_name(out.stem + '.nikto')
         try:
-            run_cmd(['proxychains4', '-q', '-f', str(conf),
-                     'nikto', '-host', target, '-output', str(nikto_out)])
+            cmd = ['nikto', '-host', target, '-output', str(nikto_out)]
+            if conf is not None:
+                cmd = ['proxychains4', '-q', '-f', str(conf)] + cmd
+            run_cmd(cmd)
         except subprocess.CalledProcessError:
             color_print(YELLOW, "[!] Nikto scan failed (possibly no web server).")
     else:
         color_print(YELLOW, "[!] Nikto not found, skipping web app scan.")
 
+
 # Map safe scan numbers to (description, function)
-SAFE_SCANS: Dict[str, Tuple[str, callable]] = {
+SAFE_SCANS: Dict[str, Tuple[str, Callable[[str, Optional[Path], Path], None]]] = {
     '1': ('Quick TCP Connect Scan', scan_quick),
     '2': ('Service Version Detection', scan_service),
     '3': ('Full TCP Port Scan', scan_full_tcp),
@@ -416,7 +436,7 @@ def main() -> None:
         sys.exit(1)
 
     # Check required tools
-    required_tools = ['nmap', 'proxychains4', 'curl']
+    required_tools = ['nmap'] if args.no_tor else ['nmap', 'proxychains4', 'curl']
     missing = [t for t in required_tools if not command_exists(t)]
     if missing:
         color_print(RED, f"[!] Missing tools: {', '.join(missing)}. Please install them manually.")
