@@ -7,7 +7,7 @@ Usage:
 """
 
 import argparse
-import os
+import ipaddress
 import re
 import shutil
 import signal
@@ -26,8 +26,8 @@ OUTPUT_DIR = Path.home() / "tor_scan_logs"
 TOR_USER_DIR = Path.home() / ".exrecon" / "tor"
 TORRC_TEMPLATE = """\
 DataDirectory {datadir}
-SocksPort 9050
-ControlPort 9051
+SocksPort {socks_port}
+ControlPort {control_port}
 CookieAuthentication 1
 CookieAuthFileGroupReadable 0
 Log notice file {logfile}
@@ -37,7 +37,7 @@ PROXYCHAINS_TEMPLATE = """\
 strict_chain
 proxy_dns
 [ProxyList]
-socks4 127.0.0.1 9050
+socks5 127.0.0.1 {socks_port}
 """
 
 # ANSI colours
@@ -65,26 +65,37 @@ def command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 def validate_target(target: str) -> bool:
-    """Allow IP addresses (v4/v6) and simple hostnames (no shell metacharacters)."""
-    # Allow alphanum, dots, hyphens, colons (for IPv6)
+    """Allow a single IP address or DNS hostname."""
+    if not target or target.lower() == 'all':
+        return False
     if not re.fullmatch(r'[a-zA-Z0-9._\-:]+', target):
         return False
-    # Reject pure wildcards or obvious nonsense
-    if target in ('*', 'all'):
+    try:
+        ipaddress.ip_address(target)
+        return True
+    except ValueError:
+        pass
+    if len(target) > 253 or target.endswith('.'):
         return False
-    return True
+    labels = target.split('.')
+    hostname_label = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
+    return all(hostname_label.fullmatch(label) for label in labels)
+
+def valid_port(port: int) -> bool:
+    return 1 <= port <= 65535
+
 
 def read_cookie(cookie_path: Path) -> str:
     """Read hex cookie from Tor control auth file."""
     with open(cookie_path, 'rb') as f:
         return f.read().hex()
 
-def tor_control_command(command: str, cookie_path: Path) -> None:
+def tor_control_command(command: str, cookie_path: Path, control_port: int = 9051) -> None:
     """Send a single command to Tor control port using cookie auth."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5)
         try:
-            s.connect(('127.0.0.1', 9051))
+            s.connect(('127.0.0.1', control_port))
         except Exception:
             raise ConnectionError("Cannot connect to Tor ControlPort")
         # Read banner
@@ -107,21 +118,23 @@ def tor_control_command(command: str, cookie_path: Path) -> None:
 class UserTor:
     """Launch and control a user‑space Tor process."""
 
-    def __init__(self):
+    def __init__(self, socks_port: int = 9050, control_port: int = 9051):
         self.process: Optional[subprocess.Popen] = None
         TOR_USER_DIR.mkdir(parents=True, exist_ok=True)
         self.datadir = TOR_USER_DIR / "data"
         self.datadir.mkdir(exist_ok=True)
         self.logfile = TOR_USER_DIR / "tor.log"
-        self.socks_port = 9050
-        self.control_port = 9051
+        self.socks_port = socks_port
+        self.control_port = control_port
         self.cookie_file = self.datadir / "control_auth_cookie"
         self.torrc_path = TOR_USER_DIR / "torrc"
 
     def write_torrc(self) -> None:
         content = TORRC_TEMPLATE.format(
             datadir=self.datadir,
-            logfile=self.logfile
+            socks_port=self.socks_port,
+            control_port=self.control_port,
+            logfile=self.logfile,
         )
         with open(self.torrc_path, 'w') as f:
             f.write(content)
@@ -155,7 +168,7 @@ class UserTor:
         """Repeatedly try to connect to control port."""
         for _ in range(10):
             try:
-                tor_control_command('GETINFO version', self.cookie_file)
+                tor_control_command('GETINFO version', self.cookie_file, self.control_port)
                 return
             except Exception:
                 time.sleep(1)
@@ -163,11 +176,11 @@ class UserTor:
 
     def new_circuit(self) -> None:
         """Signal NEWNYM to build fresh circuits."""
-        tor_control_command('SIGNAL NEWNYM', self.cookie_file)
+        tor_control_command('SIGNAL NEWNYM', self.cookie_file, self.control_port)
         # Wait for circuits to be built
         time.sleep(5)
         # Verify we are still connected
-        tor_control_command('GETINFO version', self.cookie_file)
+        tor_control_command('GETINFO version', self.cookie_file, self.control_port)
 
     def terminate(self) -> None:
         if self.process:
@@ -184,11 +197,11 @@ class UserTor:
 # ---------------------------------------------------------------------------
 # Proxychains helper
 # ---------------------------------------------------------------------------
-def write_proxychains_conf() -> Path:
+def write_proxychains_conf(socks_port: int = 9050) -> Path:
     """Create a custom proxychains config for our user Tor."""
     conf_path = TOR_USER_DIR / "proxychains.conf"
     with open(conf_path, 'w') as f:
-        f.write(PROXYCHAINS_TEMPLATE)
+        f.write(PROXYCHAINS_TEMPLATE.format(socks_port=socks_port))
     return conf_path
 
 # ---------------------------------------------------------------------------
@@ -306,6 +319,14 @@ UNSAFE_SCANS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+def is_nmap_open_port_line(line: str) -> bool:
+    """Return True for Nmap port rows whose state is open."""
+    columns = line.split()
+    if len(columns) < 2:
+        return False
+    return bool(re.fullmatch(r'\d+/(tcp|udp|sctp)', columns[0])) and columns[1] == 'open'
+
+
 def generate_summary(target: str, tor_exit_ip: str, timestamp: int,
                      selected_scans: List[str], output_base: Path) -> Path:
     summary_txt = OUTPUT_DIR / f"scan_summary_{timestamp}.txt"
@@ -329,7 +350,7 @@ def generate_summary(target: str, tor_exit_ip: str, timestamp: int,
             try:
                 with open(log, 'r') as f:
                     for line in f:
-                        if 'open' in line and 'PORT' not in line:
+                        if is_nmap_open_port_line(line):
                             lines.append(line.rstrip())
                             found = True
             except Exception:
@@ -379,7 +400,11 @@ def main() -> None:
     parser.add_argument('-s', '--scans', default='1,2,4',
                         help='Comma-separated scan numbers (default: 1,2,4)')
     parser.add_argument('--no-tor', action='store_true',
-                        help='Disable Tor; run direct Nmap (no anonymity, allows SYN/UDP)')
+                        help='Disable Tor; run direct Nmap (no anonymity, safe scans only)')
+    parser.add_argument('--socks-port', type=int, default=9050,
+                        help='Tor SOCKS port to use when Tor is enabled (default: 9050)')
+    parser.add_argument('--control-port', type=int, default=9051,
+                        help='Tor control port to use when Tor is enabled (default: 9051)')
     parser.add_argument('-h', '--help', action='store_true', help='Show this help')
     parser.add_argument('--version', action='store_true', help='Show version')
     args, _ = parser.parse_known_args()
@@ -403,6 +428,13 @@ def main() -> None:
         target = input("Target domain/IP: ").strip()
     if not validate_target(target):
         color_print(RED, "[!] Invalid target. Only IPs and hostnames allowed.")
+        sys.exit(1)
+
+    if not valid_port(args.socks_port) or not valid_port(args.control_port):
+        color_print(RED, "[!] Tor ports must be between 1 and 65535.")
+        sys.exit(1)
+    if args.socks_port == args.control_port:
+        color_print(RED, "[!] SOCKS port and control port must be different.")
         sys.exit(1)
 
     selected = [s.strip() for s in args.scans.split(',') if s.strip()]
@@ -451,7 +483,7 @@ def main() -> None:
         if not command_exists('tor'):
             color_print(RED, "[!] tor not found. Install tor or use --no-tor.")
             sys.exit(1)
-        utor = UserTor()
+        utor = UserTor(socks_port=args.socks_port, control_port=args.control_port)
         try:
             color_print(YELLOW, "[*] Starting user‑space Tor...")
             utor.start()
@@ -459,7 +491,7 @@ def main() -> None:
             color_print(RED, f"[!] Failed to start Tor: {e}")
             sys.exit(1)
         # Create proxychains config
-        proxychains_conf = write_proxychains_conf()
+        proxychains_conf = write_proxychains_conf(args.socks_port)
         # Wait and verify Tor is working
         for attempt in range(3):
             if check_tor_via_proxy(proxychains_conf):
