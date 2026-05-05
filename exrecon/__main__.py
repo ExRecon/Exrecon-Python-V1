@@ -157,7 +157,7 @@ class UserTor:
         # Wait for cookie file to appear (Tor is ready)
         for _ in range(30):
             if self.cookie_file.exists():
-                # # Restrict permissions on the Tor control auth cookie (owner read/write only)
+                # Restrict permissions on the Tor control auth cookie (owner read/write only)
 			try:
 				os.chmod(self.cookie_file, 0o600)
 			except Exception:
