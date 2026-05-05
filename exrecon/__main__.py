@@ -54,7 +54,7 @@ NC = "\033[0m"
 # Utility functions
 # ---------------------------------------------------------------------------
 def eprint(*args, **kwargs) -> None:
-    print(*args, file=sys.stderr, **kwargs)
+    print(*args, **kwargs)
 
 def color_print(color: str, *args) -> None:
     msg = ' '.join(str(a) for a in args)
@@ -157,7 +157,12 @@ class UserTor:
         # Wait for cookie file to appear (Tor is ready)
         for _ in range(30):
             if self.cookie_file.exists():
-                # Wait a bit more for control port to open
+                # # Restrict permissions on the Tor control auth cookie (owner read/write only)
+			try:
+				os.chmod(self.cookie_file, 0o600)
+			except Exception:
+				pass
+			# Wait a bit more for control port to open
                 time.sleep(1)
                 break
             time.sleep(1)
@@ -218,7 +223,8 @@ def check_tor_via_proxy(proxychains_conf: Path) -> bool:
              'curl', '-s', 'https://check.torproject.org/'],
             capture_output=True, text=True, timeout=30
         )
-        return 'Congratulations' in res.stdout
+        output = res.stdout.lower()
+		return ('congratulations' in output) or ('you are using tor' in output)
     except Exception:
         return False
 
@@ -351,7 +357,7 @@ def generate_summary(target: str, tor_exit_ip: str, timestamp: int,
     for log in sorted(output_base.parent.glob(f"{output_base.stem}.*")):
         if log.suffix in ('.nmap', '.webnmap') or log.name.endswith('.nmap'):
             try:
-                with open(log, 'r') as f:
+                with open(log, 'r', encoding='utf-8', errors='replace') as f:
                     for line in f:
                         if is_nmap_open_port_line(line):
                             lines.append(line.rstrip())
@@ -550,6 +556,14 @@ def main() -> None:
     for s in summaries:
         if s != summary_txt:
             prev = s
+		# Prune old scan logs (keep last 30 days)
+		cutoff = time.time() - 30*24*3600
+		for old_file in OUTPUT_DIR.glob("*"):
+			try:
+				if old_file.is_file() and old_file.stat().st_mtime < cutoff:
+					old_file.unlink()
+				except Exception:
+					pass
             break
     if prev:
         color_print(YELLOW, "[*] Comparing with previous scan...")
